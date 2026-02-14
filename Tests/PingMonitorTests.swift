@@ -122,14 +122,14 @@ struct PingMonitorTests {
     }
 
     @Test("Stale history is discarded on load")
-    func staleHistoryDiscarded() {
+    func staleHistoryDiscarded() throws {
         // Save history with old timestamps
         let staleResult = PingResult(
             timestamp: Date.now.addingTimeInterval(-3600),
             latency: 50.0,
             host: "8.8.8.8"
         )
-        let data = try! JSONEncoder().encode([staleResult])
+        let data = try JSONEncoder().encode([staleResult])
         UserDefaults.standard.set(data, forKey: "pingHistory")
 
         let monitor = PingMonitor(settings: AppSettings(), executor: MockPingExecutor())
