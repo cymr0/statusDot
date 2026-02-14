@@ -1,5 +1,5 @@
 import AppKit
-import Combine
+import Observation
 import SwiftUI
 
 @MainActor
@@ -7,8 +7,8 @@ class StatusBarController {
     private var statusItem: NSStatusItem
     private var monitor: PingMonitor
     private var popover: NSPopover
-    private var statusCancellable: AnyCancellable?
-    private var eventMonitor: Any?
+    private var observationTask: Task<Void, Never>?
+    nonisolated(unsafe) private var eventMonitor: Any?
 
     init(monitor: PingMonitor) {
         self.monitor = monitor
@@ -20,20 +20,24 @@ class StatusBarController {
         popover.contentViewController = NSHostingController(rootView: StatusDetailView(monitor: monitor))
 
         if let button = statusItem.button {
-            updateIcon(status: .down)
+            updateIcon(status: monitor.status)
             button.action = #selector(togglePopover(_:))
             button.target = self
         }
 
-        let monitorRef = monitor
-        statusCancellable = monitorRef.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self = self else { return }
-                    self.updateIcon(status: self.monitor.status)
+        observationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await withCheckedContinuation { continuation in
+                    withObservationTracking {
+                        _ = self.monitor.status
+                    } onChange: {
+                        continuation.resume()
+                    }
                 }
+                self.updateIcon(status: self.monitor.status)
             }
+        }
 
         eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -45,6 +49,7 @@ class StatusBarController {
     }
 
     deinit {
+        observationTask?.cancel()
         if let eventMonitor = eventMonitor {
             NSEvent.removeMonitor(eventMonitor)
         }
@@ -63,11 +68,12 @@ class StatusBarController {
                 height: dotSize
             )
             let path = NSBezierPath(ovalIn: dotRect)
-            status.color.setFill()
+            NSColor(status.color).setFill()
             path.fill()
             return true
         }
         image.isTemplate = false
+        image.accessibilityDescription = "StatusDot, connection \(status.label)"
         button.image = image
         button.toolTip = "StatusDot — \(status.label)"
     }

@@ -1,38 +1,32 @@
-import AppKit
+import Foundation
 
-struct PingResult: Identifiable {
-    let id = UUID()
+struct PingResult: Identifiable, Sendable, Codable {
+    enum FailureReason: String, Codable, Sendable {
+        case timeout
+        case processError
+    }
+
+    let id: UUID
     let timestamp: Date
     let latency: Double?
     let host: String
+    let failureReason: FailureReason?
 
     var isSuccess: Bool { latency != nil }
-}
 
-enum ConnectionStatus {
-    case excellent
-    case good
-    case degraded
-    case poor
-    case down
-
-    var color: NSColor {
-        switch self {
-        case .excellent: return .systemGreen
-        case .good: return .systemGreen
-        case .degraded: return .systemYellow
-        case .poor: return .systemOrange
-        case .down: return .systemRed
+    var failureLabel: String {
+        switch failureReason {
+        case .timeout: "timeout"
+        case .processError: "error"
+        case nil: "failed"
         }
     }
 
-    var label: String {
-        switch self {
-        case .excellent: return "Excellent"
-        case .good: return "Good"
-        case .degraded: return "Degraded"
-        case .poor: return "Poor"
-        case .down: return "Down"
-        }
+    init(timestamp: Date, latency: Double?, host: String, failureReason: FailureReason? = nil) {
+        self.id = UUID()
+        self.timestamp = timestamp
+        self.latency = latency
+        self.host = host
+        self.failureReason = failureReason
     }
 }

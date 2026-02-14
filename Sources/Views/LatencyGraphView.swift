@@ -1,85 +1,70 @@
 import SwiftUI
+import Charts
 
 struct LatencyGraphView: View {
     let history: [PingResult]
+    private let slotCount = 60
 
     var body: some View {
-        GeometryReader { _ in
-            let data = Array(history.suffix(60))
-            let latencies = data.compactMap(\.latency)
-            let maxVal = max((latencies.max() ?? 100) * 1.2, 50)
+        let recent = Array(history.suffix(slotCount))
+        let latencies = recent.compactMap(\.latency)
+        let maxVal = max((latencies.max() ?? 100) * 1.2, 50)
+        let padCount = slotCount - recent.count
+        let slots: [PingResult?] = Array(repeating: nil, count: padCount) + recent
 
-            Canvas { context, size in
-                let barWidth = max((size.width - 30) / CGFloat(max(data.count, 1)), 2)
-                let layout = ChartLayout(chartLeft: 28, barWidth: barWidth, maxVal: maxVal)
-
-                drawGridLines(context: context, size: size, layout: layout)
-                drawBars(context: context, size: size, data: data, layout: layout)
+        Chart(Array(slots.enumerated()), id: \.offset) { index, result in
+            if let result {
+                if let latency = result.latency {
+                    BarMark(
+                        x: .value("Index", String(index)),
+                        y: .value("Latency", latency)
+                    )
+                    .foregroundStyle(barColor(for: latency))
+                } else {
+                    BarMark(
+                        x: .value("Index", String(index)),
+                        y: .value("Latency", maxVal)
+                    )
+                    .foregroundStyle(.red.opacity(0.3))
+                }
             }
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.3))
-        .cornerRadius(6)
-    }
-
-    private struct ChartLayout {
-        let chartLeft: CGFloat
-        let barWidth: CGFloat
-        let maxVal: Double
-    }
-
-    private func drawGridLines(
-        context: GraphicsContext,
-        size: CGSize,
-        layout: ChartLayout
-    ) {
-        for row in 0...3 {
-            let yPos = size.height - (size.height * CGFloat(row) / 3.0)
-            let val = layout.maxVal * Double(row) / 3.0
-
-            var linePath = Path()
-            linePath.move(to: CGPoint(x: layout.chartLeft, y: yPos))
-            linePath.addLine(to: CGPoint(x: size.width, y: yPos))
-            context.stroke(linePath, with: .color(.gray.opacity(0.2)), lineWidth: 0.5)
-
-            let label = Text(String(format: "%.0f", val))
-                .font(.system(size: 7, design: .monospaced))
-                .foregroundColor(.secondary)
-            context.draw(label, at: CGPoint(x: 14, y: yPos), anchor: .trailing)
-        }
-    }
-
-    private func drawBars(
-        context: GraphicsContext,
-        size: CGSize,
-        data: [PingResult],
-        layout: ChartLayout
-    ) {
-        for (index, result) in data.enumerated() {
-            let xPos = layout.chartLeft + CGFloat(index) * layout.barWidth
-            if let latency = result.latency {
-                let barHeight = max(CGFloat(latency / layout.maxVal) * size.height, 2)
-                let rect = CGRect(
-                    x: xPos,
-                    y: size.height - barHeight,
-                    width: max(layout.barWidth - 1, 1),
-                    height: barHeight
-                )
-                let color: Color = latency < 50 ? .green :
-                                   latency < 100 ? .green.opacity(0.7) :
-                                   latency < 200 ? .yellow : .orange
-                context.fill(Path(roundedRect: rect, cornerRadius: 1), with: .color(color))
-            } else {
-                let rect = CGRect(
-                    x: xPos,
-                    y: 0,
-                    width: max(layout.barWidth - 1, 1),
-                    height: size.height
-                )
-                context.fill(
-                    Path(roundedRect: rect, cornerRadius: 1),
-                    with: .color(.red.opacity(0.3))
-                )
+        .chartXAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(position: .leading) { _ in
+                AxisGridLine()
+                    .foregroundStyle(.gray.opacity(0.2))
+                AxisValueLabel()
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
             }
         }
+        .chartYScale(domain: 0...maxVal)
+        .background(.secondary.opacity(0.1))
+        .clipShape(.rect(cornerRadius: 6))
+        .accessibilityElement()
+        .accessibilityLabel(chartAccessibilityLabel)
+    }
+
+    private func barColor(for latency: Double) -> Color {
+        if latency < ConnectionStatus.excellentThreshold { return .green }
+        if latency < ConnectionStatus.goodThreshold { return .green.opacity(0.7) }
+        if latency < ConnectionStatus.degradedThreshold { return .yellow }
+        return .orange
+    }
+
+    private var chartAccessibilityLabel: String {
+        let data = Array(history.suffix(slotCount))
+        let latencies = data.compactMap(\.latency)
+        guard !latencies.isEmpty else {
+            return "Latency history chart, no data"
+        }
+        let avg = latencies.reduce(0, +) / Double(latencies.count)
+        let failures = data.count - latencies.count
+        var label = "Latency history chart, \(data.count) samples, average \(avg.formatted(.number.precision(.fractionLength(0)))) ms"
+        if failures > 0 {
+            label += ", \(failures) failed"
+        }
+        return label
     }
 }

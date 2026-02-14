@@ -7,14 +7,15 @@ struct StatCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .font(.footnote.monospaced())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(6)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
-        .cornerRadius(4)
+        .background(.secondary.opacity(0.15))
+        .clipShape(.rect(cornerRadius: 4))
+        .accessibilityElement(children: .combine)
     }
 }

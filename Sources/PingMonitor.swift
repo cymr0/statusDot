@@ -1,101 +1,68 @@
-import Combine
 import Foundation
+import Observation
+import os.log
 
+private let logger = Logger(subsystem: "StatusDot", category: "PingMonitor")
+
+@Observable
 @MainActor
-class PingMonitor: ObservableObject {
-    @Published var status: ConnectionStatus = .down
-    @Published var history: [PingResult] = []
-    @Published var currentLatency: Double?
-    @Published var averageLatency: Double?
-    @Published var packetLoss: Double = 0
-    @Published var minLatency: Double?
-    @Published var maxLatency: Double?
+class PingMonitor {
+    private(set) var status: ConnectionStatus = .down
+    private(set) var history: [PingResult] = []
+    private(set) var currentLatency: Double?
+    private(set) var averageLatency: Double?
+    private(set) var packetLoss: Double = 0
+    private(set) var minLatency: Double?
+    private(set) var maxLatency: Double?
 
     let settings: AppSettings
-    private var timer: Timer?
+    @ObservationIgnored private let executor: PingExecutor
+    @ObservationIgnored private var pingTask: Task<Void, Never>?
     private let maxHistory = 120
-    private var settingsCancellable: AnyCancellable?
+    let statsWindow = 20
+    let statusWindow = 12
+    @ObservationIgnored private static let historyKey = "pingHistory"
+    /// Discard persisted pings older than this on load.
+    private let maxHistoryAge: TimeInterval = 600
 
-    init(settings: AppSettings) {
+    init(settings: AppSettings, executor: PingExecutor = ProcessPingExecutor()) {
         self.settings = settings
+        self.executor = executor
+        loadHistory()
     }
 
     func start() {
-        ping()
-        scheduleTimer()
-
-        settingsCancellable = settings.$pingInterval
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                MainActor.assumeIsolated {
-                    self?.stop()
-                    self?.ping()
-                    self?.scheduleTimer()
-                }
+        stop()
+        pingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.ping()
+                try? await Task.sleep(for: .seconds(self.settings.pingInterval))
             }
+        }
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
+        pingTask?.cancel()
+        pingTask = nil
     }
 
-    private func scheduleTimer() {
-        timer = Timer.scheduledTimer(withTimeInterval: settings.pingInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.ping()
-            }
-        }
-    }
-
-    private func ping() {
+    private func ping() async {
         let hosts = settings.hosts
         guard !hosts.isEmpty else { return }
         let host = hosts[history.count % hosts.count]
-        Task { [weak self] in
-            let result = await Self.executePing(host: host)
-            self?.recordResult(result)
-        }
+        let result = await executor.execute(host: host)
+        recordResult(result)
     }
 
-    private static func executePing(host: String) async -> PingResult {
-        let process = Process()
-        let pipe = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: "/sbin/ping")
-        process.arguments = ["-c", "1", "-W", "3000", host]
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-
-            if process.terminationStatus == 0,
-               let latency = parsePingLatency(from: output) {
-                return PingResult(timestamp: Date(), latency: latency, host: host)
-            } else {
-                return PingResult(timestamp: Date(), latency: nil, host: host)
-            }
-        } catch {
-            return PingResult(timestamp: Date(), latency: nil, host: host)
-        }
-    }
-
-    private static func parsePingLatency(from output: String) -> Double? {
-        guard let regex = try? NSRegularExpression(pattern: #"time=(\d+\.?\d*)\s*ms"#),
-              let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
-              let range = Range(match.range(at: 1), in: output) else {
+    nonisolated static func parsePingLatency(from output: String) -> Double? {
+        guard let match = output.firstMatch(of: #/time=(\d+\.?\d*)\s*ms/#) else {
             return nil
         }
-        return Double(output[range])
+        return Double(match.1)
     }
 
-    private func recordResult(_ result: PingResult) {
+    func recordResult(_ result: PingResult) {
         history.append(result)
         if history.count > maxHistory {
             history.removeFirst(history.count - maxHistory)
@@ -104,10 +71,38 @@ class PingMonitor: ObservableObject {
         currentLatency = result.latency
         updateStats()
         updateStatus()
+        saveHistory()
+    }
+
+    private func saveHistory() {
+        do {
+            let data = try JSONEncoder().encode(history)
+            UserDefaults.standard.set(data, forKey: Self.historyKey)
+        } catch {
+            logger.error("Failed to encode history: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadHistory() {
+        guard let data = UserDefaults.standard.data(forKey: Self.historyKey) else { return }
+        do {
+            let saved = try JSONDecoder().decode([PingResult].self, from: data)
+            let cutoff = Date.now.addingTimeInterval(-maxHistoryAge)
+            history = Array(saved.filter { $0.timestamp > cutoff }.suffix(maxHistory))
+        } catch {
+            logger.error("Failed to decode history, clearing: \(error.localizedDescription)")
+            UserDefaults.standard.removeObject(forKey: Self.historyKey)
+            return
+        }
+        if let last = history.last {
+            currentLatency = last.latency
+        }
+        updateStats()
+        updateStatus()
     }
 
     private func updateStats() {
-        let recent = Array(history.suffix(20))
+        let recent = Array(history.suffix(statsWindow))
         let successes = recent.compactMap(\.latency)
 
         if successes.isEmpty {
@@ -124,7 +119,7 @@ class PingMonitor: ObservableObject {
     }
 
     private func updateStatus() {
-        let recent = Array(history.suffix(12))
+        let recent = Array(history.suffix(statusWindow))
         guard !recent.isEmpty else {
             status = .down
             return
@@ -135,16 +130,16 @@ class PingMonitor: ObservableObject {
 
         if successes.isEmpty {
             status = .down
-        } else if lossRate > 0.5 {
+        } else if lossRate > ConnectionStatus.poorLossThreshold {
             status = .poor
-        } else if lossRate > 0.2 {
+        } else if lossRate > ConnectionStatus.degradedLossThreshold {
             status = .degraded
         } else if let avg = averageLatency {
-            if avg < 50 {
+            if avg < ConnectionStatus.excellentThreshold {
                 status = .excellent
-            } else if avg < 100 {
+            } else if avg < ConnectionStatus.goodThreshold {
                 status = .good
-            } else if avg < 200 {
+            } else if avg < ConnectionStatus.degradedThreshold {
                 status = .degraded
             } else {
                 status = .poor

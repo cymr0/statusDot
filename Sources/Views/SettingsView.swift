@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var settings: AppSettings
+    var settings: AppSettings
     @Binding var showSettings: Bool
     @State private var newHost = ""
 
@@ -9,17 +9,31 @@ struct SettingsView: View {
         ("2s", 2), ("5s", 5), ("10s", 10), ("30s", 30), ("60s", 60)
     ]
 
+    private var validationMessage: String? {
+        let trimmed = newHost.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if settings.hosts.contains(trimmed) { return "Host already added" }
+        if trimmed.hasPrefix("-") { return "Host cannot start with a dash" }
+        if trimmed.count > 253 { return "Host too long" }
+        if !AppSettings.isValidHost(trimmed) { return "Invalid characters in host" }
+        return nil
+    }
+
+    private var isAddDisabled: Bool {
+        let trimmed = newHost.trimmingCharacters(in: .whitespaces)
+        return !AppSettings.isValidHost(trimmed) || settings.hosts.contains(trimmed)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Button {
+                Button("Back", systemImage: "chevron.left") {
                     showSettings = false
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.caption)
                 }
+                .keyboardShortcut(",", modifiers: .command)
+                .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
                 Text("Settings")
                     .font(.headline)
                 Spacer()
@@ -29,21 +43,21 @@ struct SettingsView: View {
 
             Text("Ping Targets")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
 
-            ForEach(Array(settings.hosts.enumerated()), id: \.offset) { index, host in
+            ForEach(settings.hosts, id: \.self) { host in
                 HStack {
                     Text(host)
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.caption.monospaced())
                     Spacer()
-                    Button {
-                        settings.hosts.remove(at: index)
-                    } label: {
-                        Image(systemName: "minus.circle.fill")
-                            .foregroundColor(.red.opacity(0.7))
-                            .font(.system(size: 12))
+                    Button("Remove", systemImage: "minus.circle.fill") {
+                        settings.hosts.removeAll { $0 == host }
                     }
+                    .labelStyle(.iconOnly)
                     .buttonStyle(.plain)
+                    .foregroundStyle(.red.opacity(0.7))
+                    .font(.caption)
+                    .accessibilityLabel("Remove \(host)")
                 }
                 .padding(.vertical, 2)
             }
@@ -51,24 +65,30 @@ struct SettingsView: View {
             HStack {
                 TextField("Add host or IP...", text: $newHost)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.caption.monospaced())
                     .onSubmit { addHost() }
-                Button {
+                Button("Add", systemImage: "plus.circle.fill") {
                     addHost()
-                } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .foregroundColor(.green.opacity(0.7))
-                        .font(.system(size: 12))
                 }
+                .labelStyle(.iconOnly)
                 .buttonStyle(.plain)
-                .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty)
+                .foregroundStyle(.green.opacity(0.7))
+                .font(.caption)
+                .disabled(isAddDisabled)
+            }
+
+            if let message = validationMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .transition(.opacity)
             }
 
             Divider()
 
             Text("Ping Interval")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
 
             HStack(spacing: 6) {
                 ForEach(intervalOptions, id: \.1) { label, value in
@@ -76,15 +96,17 @@ struct SettingsView: View {
                         settings.pingInterval = value
                     }
                     .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: settings.pingInterval == value ? .bold : .regular))
-                    .foregroundColor(settings.pingInterval == value ? .accentColor : .secondary)
+                    .font(.caption)
+                    .bold(settings.pingInterval == value)
+                    .foregroundStyle(settings.pingInterval == value ? Color.accentColor : .secondary)
+                    .accessibilityAddTraits(settings.pingInterval == value ? .isSelected : [])
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(settings.pingInterval == value
-                                  ? Color.accentColor.opacity(0.15)
-                                  : Color.clear)
+                        settings.pingInterval == value
+                            ? Color.accentColor.opacity(0.15)
+                            : Color.clear,
+                        in: .rect(cornerRadius: 4)
                     )
                 }
             }
@@ -95,7 +117,7 @@ struct SettingsView: View {
 
     private func addHost() {
         let host = newHost.trimmingCharacters(in: .whitespaces)
-        guard !host.isEmpty, !settings.hosts.contains(host) else { return }
+        guard AppSettings.isValidHost(host), !settings.hosts.contains(host) else { return }
         settings.hosts.append(host)
         newHost = ""
     }

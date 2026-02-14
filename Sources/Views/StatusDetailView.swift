@@ -1,41 +1,53 @@
 import SwiftUI
 
 struct StatusDetailView: View {
-    @ObservedObject var monitor: PingMonitor
+    var monitor: PingMonitor
     @State private var showSettings = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if showSettings {
                 SettingsView(settings: monitor.settings, showSettings: $showSettings)
+                    .transition(.push(from: .leading))
             } else {
-                statusContent
+                StatusContentView(monitor: monitor, showSettings: $showSettings)
+                    .transition(.push(from: .trailing))
             }
         }
+        .animation(.default, value: showSettings)
         .padding(14)
         .frame(width: 320)
     }
+}
 
-    private var statusContent: some View {
+private struct StatusContentView: View {
+    var monitor: PingMonitor
+    @Binding var showSettings: Bool
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HeaderView(status: monitor.status)
 
             Divider()
 
-            StatsGridView(monitor: monitor)
+            if monitor.history.isEmpty {
+                WaitingView()
+            } else {
+                StatsGridView(monitor: monitor)
 
-            Divider()
+                Divider()
 
-            Text("Latency History (last 5 min)")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                Text(chartLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-            LatencyGraphView(history: monitor.history)
-                .frame(height: 90)
+                LatencyGraphView(history: monitor.history)
+                    .frame(height: 90)
 
-            Divider()
+                Divider()
 
-            RecentPingsView(history: monitor.history)
+                RecentPingsView(history: monitor.history)
+            }
 
             Divider()
 
@@ -45,6 +57,29 @@ struct StatusDetailView: View {
             )
         }
     }
+
+    private var chartLabel: String {
+        let totalSeconds = Int(monitor.settings.pingInterval) * 60
+        if totalSeconds >= 3600 {
+            return "Latency History (last \(totalSeconds / 3600) hr)"
+        } else {
+            return "Latency History (last \(totalSeconds / 60) min)"
+        }
+    }
+}
+
+private struct WaitingView: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Waiting for first ping...")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 20)
+    }
 }
 
 private struct HeaderView: View {
@@ -53,20 +88,21 @@ private struct HeaderView: View {
     var body: some View {
         HStack {
             Circle()
-                .fill(Color(nsColor: status.color))
+                .fill(status.color)
                 .frame(width: 12, height: 12)
+                .accessibilityHidden(true)
             Text(status.label)
                 .font(.headline)
             Spacer()
             Text("StatusDot")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
         }
     }
 }
 
 private struct StatsGridView: View {
-    @ObservedObject var monitor: PingMonitor
+    var monitor: PingMonitor
 
     var body: some View {
         LazyVGrid(columns: [
@@ -77,14 +113,14 @@ private struct StatsGridView: View {
             StatCard(label: "Average", value: formatLatency(monitor.averageLatency))
             StatCard(label: "Min", value: formatLatency(monitor.minLatency))
             StatCard(label: "Max", value: formatLatency(monitor.maxLatency))
-            StatCard(label: "Packet Loss", value: String(format: "%.0f%%", monitor.packetLoss))
+            StatCard(label: "Packet Loss", value: "\(monitor.packetLoss.formatted(.number.precision(.fractionLength(0))))%")
             StatCard(label: "Samples", value: "\(monitor.history.count)")
         }
     }
 
     private func formatLatency(_ latency: Double?) -> String {
         guard let latency else { return "—" }
-        return String(format: "%.1f ms", latency)
+        return "\(latency.formatted(.number.precision(.fractionLength(1)))) ms"
     }
 }
 
@@ -95,7 +131,7 @@ private struct RecentPingsView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Recent Pings")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
@@ -117,28 +153,30 @@ private struct PingRowView: View {
             Circle()
                 .fill(result.isSuccess ? Color.green : Color.red)
                 .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
             Text(result.timestamp, style: .time)
-                .font(.system(size: 10, design: .monospaced))
+                .font(.caption2.monospaced())
             Text(result.host)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.secondary)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
             Spacer()
             if let latency = result.latency {
-                Text(String(format: "%.1f ms", latency))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(latencyColor(latency))
+                Text("\(latency.formatted(.number.precision(.fractionLength(1)))) ms")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(latencyColor(latency))
             } else {
-                Text("timeout")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.red)
+                Text(result.failureLabel)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.red)
             }
         }
+        .accessibilityElement(children: .combine)
     }
 
     private func latencyColor(_ latency: Double) -> Color {
-        if latency < 50 { return .green }
-        if latency < 100 { return .primary }
-        if latency < 200 { return .yellow }
+        if latency < ConnectionStatus.excellentThreshold { return .green }
+        if latency < ConnectionStatus.goodThreshold { return .primary }
+        if latency < ConnectionStatus.degradedThreshold { return .yellow }
         return .red
     }
 }
@@ -152,21 +190,23 @@ private struct FooterView: View {
             Button("Quit") {
                 NSApplication.shared.terminate(nil)
             }
+            .keyboardShortcut("q", modifiers: .command)
             .buttonStyle(.plain)
-            .foregroundColor(.secondary)
+            .foregroundStyle(.secondary)
             .font(.caption)
             Spacer()
             Text("Every \(Int(pingInterval))s")
                 .font(.caption2)
-                .foregroundColor(.secondary)
-            Button {
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Ping interval: every \(Int(pingInterval)) seconds")
+            Button("Settings", systemImage: "gear") {
                 showSettings = true
-            } label: {
-                Image(systemName: "gear")
-                    .font(.caption)
             }
+            .keyboardShortcut(",", modifiers: .command)
+            .labelStyle(.iconOnly)
             .buttonStyle(.plain)
-            .foregroundColor(.secondary)
+            .foregroundStyle(.secondary)
+            .font(.caption)
         }
     }
 }
