@@ -17,6 +17,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var settings: AppSettings?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "png", subdirectory: "Resources"),
+           let iconImage = NSImage(contentsOf: iconURL) {
+            NSApplication.shared.applicationIconImage = iconImage
+        }
+
         let settings = AppSettings()
         self.settings = settings
         let monitor = PingMonitor(settings: settings)
